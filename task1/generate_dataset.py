@@ -15,6 +15,7 @@ import re
 import time
 
 import cbs
+from actions import trajectory_to_actions
 from grid_generator import make_map
 
 # ----------------------------------------------------------------------
@@ -93,6 +94,8 @@ def main():
                         "goal": list(a["goal"])} for a in agents],
             "trajectories": {str(i): [list(c) for c in paths[i]]
                              for i in range(len(paths))},
+            "actions": {str(i): trajectory_to_actions(paths[i])
+                        for i in range(len(paths))},
             "makespan": len(paths[0]) - 1,
             "sum_of_costs": sum_of_costs,
             "had_conflict": info["had_conflict"],

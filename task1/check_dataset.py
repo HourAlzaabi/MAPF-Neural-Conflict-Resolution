@@ -16,6 +16,8 @@ How to run:
 import json
 import os
 
+from actions import trajectory_to_actions
+
 FOLDER = "dataset"
 
 
@@ -27,12 +29,17 @@ def check(s):
     paths = {}
 
     for agent in s["agents"]:
-        path = [tuple(c) for c in s["trajectories"][str(agent["id"])]]
+        aid = str(agent["id"])
+        path = [tuple(c) for c in s["trajectories"][aid]]
         paths[agent["id"]] = path
         if path[0] != tuple(agent["start"]):
             problems.append(f"robot {agent['id']} does not begin on its start")
         if path[-1] != tuple(agent["goal"]):
             problems.append(f"robot {agent['id']} does not end on its goal")
+        # the action labels must match the path exactly
+        if "actions" in s:
+            if trajectory_to_actions(path) != s["actions"].get(aid):
+                problems.append(f"robot {agent['id']} actions do not match its path")
         for (x, y) in path:
             if not (0 <= x < w and 0 <= y < h):
                 problems.append(f"robot {agent['id']} left the map")

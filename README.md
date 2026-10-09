@@ -51,8 +51,7 @@ The generator is seeded (`SEED = 42`), so everyone gets the identical dataset.
 ## Use of AI
 
 AI assistance (Anthropic's Claude) was used as a tool during this project to help
-write and refine code, build the dataset pipeline, and draft documentation. All
-AI-assisted work was reviewed, tested, and verified by the team, who take full
+refine code. All AI-assisted work was reviewed, tested, and verified by the team, who take full
 responsibility for the contents of this repository. AI use is documented in line
 with the course's academic-integrity requirements; see the project report's
 AI-use disclosure for the full account.

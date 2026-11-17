@@ -2,7 +2,7 @@
 cbs.py  -  Conflict-Based Search (CBS), the "expert" our neural net copies.
 
 THE IDEA IN PLAIN WORDS
-    1. Plan a shortest path for every robot on its own, ignoring the others.
+    1. Plan a shortest route for every robot on its own, ignoring the others.
     2. Look for the first crash between two robots.
     3. If there is none -> finished.
     4. If there is one, make two copies of the plan:
@@ -13,11 +13,29 @@ THE IDEA IN PLAIN WORDS
 
     Because it always continues from the cheapest plan, the first crash-free
     plan it finds has the smallest possible total number of steps
-    (this total is called "sum of costs"). That is why CBS is called optimal.
+    (this total is called "sum of costs", a.k.a. flowtime). That is why CBS
+    is called optimal.
 
 TWO LEVELS
     High level = the loop above (decides the rules, called "constraints").
     Low level  = A* search for ONE robot that obeys its constraints.
+
+A* (LOW LEVEL), IN PLAIN WORDS
+    A* is shortest-path search that is told, for every cell, roughly how far
+    the goal still is (the "heuristic"). It always expands the option that
+    looks cheapest overall = steps already taken + estimated steps left, so it
+    heads straight for the goal instead of searching blindly in all directions.
+    Our heuristic is EXACT: a backward BFS from the goal gives the true walking
+    distance from every cell (see `distance_to_goal`). BFS here is only the
+    pre-computation that feeds A*; the actual route search is A*.
+
+WAYPOINTS / PARKING  (so a robot never freezes in an aisle)
+    A robot's route is start -> goal -> parking cell. It drives to its goal
+    (does its task), then clears to a parking cell that sits in open floor, and
+    rests there. The low level is therefore a multi-waypoint A*: it searches
+    through space AND time AND which leg of the trip it is on. CBS coordinates
+    every robot across BOTH legs at once, so the parking moves are collision-
+    free too. A robot with no parking cell just rests on its goal (old behaviour).
 
 TWO KINDS OF CRASH
     Vertex conflict: two robots in the same cell at the same time.
@@ -32,8 +50,8 @@ from grid_generator import neighbours
 
 
 def distance_to_goal(goal, width, height, obstacles):
-    """BFS from the goal: real walking distance from every cell to the goal.
-    A* uses this as its "how far is left" guess (the heuristic)."""
+    """Backward BFS from a cell: the real walking distance from every cell to
+    `goal`. A* uses this as its exact "how far is left" guess (the heuristic)."""
     dist = {goal: 0}
     queue = deque([goal])
     while queue:
@@ -45,40 +63,74 @@ def distance_to_goal(goal, width, height, obstacles):
     return dist
 
 
-def plan_one_robot(start, goal, width, height, obstacles, dist,
+def plan_one_robot(start, waypoints, width, height, obstacles, dists,
                    banned_cells, banned_moves):
     """
-    LOW LEVEL: A* search through space AND time for one robot.
+    LOW LEVEL: multi-waypoint A* search through space AND time for one robot.
 
+    waypoints    : ordered list of cells to visit, e.g. [goal, parking_cell].
+                   The robot must reach them in order and finally rest on the
+                   LAST one. A single-element list = plain "go to goal and park
+                   on it" (the classic one-shot behaviour).
+    dists        : list of distance fields, dists[k] = distance_to_goal for
+                   waypoints[k]. Used as the A* heuristic for each leg.
     banned_cells : set of (cell, t)          -> may not be in `cell` at time t
     banned_moves : set of (from, to, t)      -> may not step from->to arriving at t
     Returns the path as a list of cells (index = time step), or None.
     """
-    if start not in dist:
-        return None  # goal cannot be reached at all
+    last = len(waypoints) - 1
+    final = waypoints[last]
 
-    # The robot parks on its goal forever, so it may only "finish" after the
-    # last time it is banned from standing on the goal.
-    banned_goal_times = [t for (cell, t) in banned_cells if cell == goal]
-    earliest_finish = max(banned_goal_times) + 1 if banned_goal_times else 0
+    if start not in dists[0]:
+        return None  # first waypoint cannot be reached at all
 
-    # Safety limit so the search always stops.
+    # Cost still to travel AFTER finishing leg k, walking the remaining
+    # waypoints in order: dists[k+1][waypoints[k]] + dists[k+2][waypoints[k+1]] ...
+    suffix = [0] * len(waypoints)
+    for k in range(last - 1, -1, -1):
+        hop = dists[k + 1].get(waypoints[k])
+        if hop is None:
+            return None  # a later waypoint is unreachable from an earlier one
+        suffix[k] = hop + suffix[k + 1]
+
+    def h(cell, phase):
+        d = dists[phase].get(cell)
+        if d is None:
+            return None
+        return d + suffix[phase]
+
+    def advance(cell, phase):
+        """If we are standing on the waypoint(s) for this leg, move on to the
+        next leg(s) for free."""
+        while phase < last and cell == waypoints[phase]:
+            phase += 1
+        return phase
+
+    # The robot parks on `final` forever, so it may only "finish" after the
+    # last time it is banned from standing on `final`.
+    banned_final_times = [t for (cell, t) in banned_cells if cell == final]
+    earliest_finish = max(banned_final_times) + 1 if banned_final_times else 0
+
     latest_rule = max([t for (_, t) in banned_cells] +
                       [t for (_, _, t) in banned_moves] + [0])
-    max_time = width * height + latest_rule
+    # Enough time to walk every leg plus wait out every rule.
+    max_time = len(waypoints) * width * height + latest_rule
 
-    # Each entry: (f = steps so far + steps left, steps left, tie-breaker, cell, t)
+    start_phase = advance(start, 0)
     counter = 0
-    open_list = [(dist[start], dist[start], counter, start, 0)]
-    came_from = {(start, 0): None}
+    h0 = h(start, start_phase)
+    if h0 is None:
+        return None
+    # Each entry: (f = steps so far + steps left, steps left, tie, cell, t, phase)
+    open_list = [(h0, h0, counter, start, 0, start_phase)]
+    came_from = {(start, 0, start_phase): None}
 
     while open_list:
-        _, _, _, cell, t = heapq.heappop(open_list)
+        _, _, _, cell, t, phase = heapq.heappop(open_list)
 
-        if cell == goal and t >= earliest_finish:
-            # Walk backwards to rebuild the path.
+        if phase == last and cell == final and t >= earliest_finish:
             path = []
-            state = (cell, t)
+            state = (cell, t, phase)
             while state is not None:
                 path.append(state[0])
                 state = came_from[state]
@@ -94,17 +146,21 @@ def plan_one_robot(start, goal, width, height, obstacles, dist,
                 continue
             if (cell, nxt, nt) in banned_moves:
                 continue
-            if (nxt, nt) in came_from:
-                continue  # already reached this cell at this time
-            came_from[(nxt, nt)] = (cell, t)
+            nphase = advance(nxt, phase)
+            key = (nxt, nt, nphase)
+            if key in came_from:
+                continue
+            est = h(nxt, nphase)
+            if est is None:
+                continue
+            came_from[key] = (cell, t, phase)
             counter += 1
-            heapq.heappush(open_list,
-                           (nt + dist[nxt], dist[nxt], counter, nxt, nt))
+            heapq.heappush(open_list, (nt + est, est, counter, nxt, nt, nphase))
     return None
 
 
 def where(path, t):
-    """Where the robot is at time t (it stays on its goal after arriving)."""
+    """Where the robot is at time t (it stays on its parking cell after arriving)."""
     return path[t] if t < len(path) else path[-1]
 
 
@@ -127,30 +183,40 @@ def first_conflict(paths):
     return None
 
 
+def _waypoints_of(agent):
+    """A robot's ordered cells to visit: [goal] or [goal, parking cell]."""
+    wp = [tuple(agent["goal"])]
+    if agent.get("park") is not None:
+        wp.append(tuple(agent["park"]))
+    return wp
+
+
 def solve(width, height, obstacles, agents, timeout=30.0):
     """
     HIGH LEVEL of CBS.
     Returns (paths, info) or (None, info) if no answer within `timeout` seconds.
-    paths[i] is the list of cells for robot i.
+    paths[i] is the list of cells for robot i (start -> goal -> parking cell).
+    info["sum_of_costs"] (flowtime) is the headline cost; makespan is secondary.
     """
     began = time.time()
     n = len(agents)
-    dists = [distance_to_goal(a["goal"], width, height, obstacles)
-             for a in agents]
+    waypoints = [_waypoints_of(a) for a in agents]
+    # One distance field per waypoint (feeds the A* heuristic for each leg).
+    dists = [[distance_to_goal(wp, width, height, obstacles) for wp in wps]
+             for wps in waypoints]
 
     def plan(i, cells, moves):
-        return plan_one_robot(agents[i]["start"], agents[i]["goal"],
-                              width, height, obstacles, dists[i],
-                              cells, moves)
+        return plan_one_robot(tuple(agents[i]["start"]), waypoints[i],
+                              width, height, obstacles, dists[i], cells, moves)
 
     def total_cost(paths):
-        return sum(len(p) - 1 for p in paths)
+        return sum(len(p) - 1 for p in paths)      # sum of costs = flowtime
 
-    # Root plan: everybody takes their own shortest path, no rules yet.
     root_cells = [set() for _ in range(n)]
     root_moves = [set() for _ in range(n)]
     root_paths = [plan(i, root_cells[i], root_moves[i]) for i in range(n)]
-    info = {"plans_checked": 0, "had_conflict": False}
+    info = {"plans_checked": 0, "had_conflict": False,
+            "sum_of_costs": None, "makespan": None}
     if any(p is None for p in root_paths):
         return None, info
 
@@ -167,11 +233,11 @@ def solve(width, height, obstacles, agents, timeout=30.0):
 
         conflict = first_conflict(paths)
         if conflict is None:
-            return paths, info          # no crashes -> this is the answer
+            info["sum_of_costs"] = total_cost(paths)        # headline (flowtime)
+            info["makespan"] = max(len(p) - 1 for p in paths)  # secondary
+            return paths, info
         info["had_conflict"] = True
 
-        # Make two children: one where robot a gets the new rule,
-        # one where robot b gets it.
         for robot in (conflict["a"], conflict["b"]):
             new_cells = [set(s) for s in cells]
             new_moves = [set(s) for s in moves]
@@ -185,7 +251,7 @@ def solve(width, height, obstacles, agents, timeout=30.0):
 
             new_path = plan(robot, new_cells[robot], new_moves[robot])
             if new_path is None:
-                continue                # this choice is a dead end
+                continue
             new_paths = list(paths)
             new_paths[robot] = new_path
             counter += 1

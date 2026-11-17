@@ -38,6 +38,7 @@ INK = (26, 29, 41)
 MUTED = (124, 132, 150)
 AMBER = (232, 161, 58)
 CRASH = (229, 72, 77)
+DEBRIS = (176, 124, 72)   # fallen boxes / random blockages (brown), vs dark shelf racks
 
 CELL = 38
 PAD = 22
@@ -89,8 +90,10 @@ def draw(surf, s, frames, t, fonts, fov=None):
     f_title, f_small = fonts
     w, h = s["grid"]["width"], s["grid"]["height"]
     walls = {tuple(c) for c in s["grid"]["obstacles"]}
+    debris = {tuple(c) for c in s["grid"].get("debris", [])}
     goals = {a["id"]: tuple(a["goal"]) for a in s["agents"]}
     starts = {a["id"]: tuple(a["start"]) for a in s["agents"]}
+    parks = {a["id"]: tuple(a["park"]) for a in s["agents"] if a.get("park") is not None}
     frame, prev = frames[t], frames[t - 1] if t else frames[t]
     surf.fill(BG)
     ox, oy = PAD, HEADER
@@ -105,8 +108,10 @@ def draw(surf, s, frames, t, fonts, fov=None):
     for y in range(h):
         for x in range(w):
             r = pygame.Rect(*px(x, y), CELL - 2, CELL - 2)
-            if (x, y) in walls:
-                pygame.draw.rect(surf, WALL, r, border_radius=5)
+            if (x, y) in debris:
+                pygame.draw.rect(surf, DEBRIS, r, border_radius=5)   # fallen box
+            elif (x, y) in walls:
+                pygame.draw.rect(surf, WALL, r, border_radius=5)     # shelf rack
             else:
                 pygame.draw.rect(surf, GRID, r, 1, border_radius=5)
 
@@ -136,6 +141,13 @@ def draw(surf, s, frames, t, fonts, fov=None):
         ctr = (gx + CELL // 2, gy + CELL // 2)
         reached = frame[i] == g
         pygame.draw.circle(surf, c, ctr, CELL // 2 - 5, 0 if reached else 3)
+    # parking cells (dashed-looking hollow diamond) - where a robot rests, out of the aisle
+    for i, pk in parks.items():
+        c = AGENT[i % len(AGENT)]
+        pxc, pyc = px(*pk)
+        cx, cy = pxc + CELL // 2, pyc + CELL // 2
+        r = CELL // 2 - 7
+        pygame.draw.polygon(surf, c, [(cx, cy - r), (cx + r, cy), (cx, cy + r), (cx - r, cy)], 2)
 
     # collisions this step (vertex / swap)
     crashed = set()
@@ -192,8 +204,8 @@ def draw(surf, s, frames, t, fonts, fov=None):
         msg, col = "Collision!", CRASH
     elif waiting_now:
         msg, col = f"Robot {', '.join(map(str, waiting_now))} waiting (yield)", AMBER
-    elif all(frame[i] == goals[i] for i in frame):
-        msg, col = "All robots reached their goals", (31, 157, 107)
+    elif all(frame[i] == parks.get(i, goals[i]) for i in frame):
+        msg, col = "All robots done & parked clear of the aisles", (31, 157, 107)
     else:
         msg, col = f"step {t} / {len(frames) - 1}", MUTED
     surf.blit(f_small.render(msg, True, col), (PAD, fy))

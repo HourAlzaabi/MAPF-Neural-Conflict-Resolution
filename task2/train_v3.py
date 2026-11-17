@@ -16,7 +16,7 @@
 #
 # If the dense set does not exist yet, generate it first:
 #     cd task1 && python generate_dense_dataset.py && cd ..
-#     (then move/point FOLDERS at task1/dense)
+#     (the warehouse set already mixes flavours, so one folder is enough)
 
 import os
 import sys
@@ -30,8 +30,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from guidance import scenario_to_samples
 
 NAMES = ["N", "S", "E", "W", "Wait"]
-# the datasets to learn from; the dense one is optional but recommended
-FOLDERS = ["task1/dataset", "task1/dense"]
+# the datasets to learn from; warehouse mix already includes the conflict-rich cluster maps
+FOLDERS = ["task1/wh_dataset"]   # warehouse mix (spread+cluster+debris), with parking legs
 
 
 class PolicyCNN(nn.Module):

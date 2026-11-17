@@ -4,15 +4,21 @@ evaluate.py  -  Task 4 evaluation harness.
 Runs a POLICY over a dataset and measures it against the optimal CBS solution
 recorded in each file: fleet success rate, makespan, flowtime, collisions.
 
-    python evaluate.py --dataset ../task1/dataset --policy cbs      # sanity: 100%, 1.00x
-    python evaluate.py --dataset ../task1/dataset --policy greedy   # no-coordination baseline
-    python evaluate.py --dataset ../task1/dataset --policy model --model ../model.pt
+    python evaluate.py --dataset ../task1/wh_dataset --policy cbs      # sanity: 100%, 1.00x
+    python evaluate.py --dataset ../task1/wh_dataset --policy greedy   # no-coordination baseline
+    python evaluate.py --dataset ../task1/wh_dataset --policy model --model ../model.pt
 
 Policies:
     cbs     - replays the stored optimal paths (proves the harness: 100%, 1.00x).
-    greedy  - rolls downhill ignoring others; reaches goals but COLLIDES.
+    greedy  - rolls downhill ignoring others; reaches its spots but COLLIDES.
     model   - Meera's trained CNN. Loads her model and builds the tensor with her
               task2/guidance.py, so the input matches training exactly.
+
+PARKING SCHEMA: a robot's route is start -> goal -> parking cell. "Done" means it
+has reached its parking cell (having passed through its goal). The greedy and model
+policies therefore steer toward the goal first, then toward the parking cell.
+Flowtime/makespan are measured to the parking cell, matching the stored CBS cost
+(which also includes the parking leg) so the ratios stay apples-to-apples.
 """
 
 import argparse
@@ -32,6 +38,14 @@ def load_scenario(path):
 
 def walls_of(s):
     return {tuple(c) for c in s["grid"]["obstacles"]}
+
+
+def goal_of(a):
+    return tuple(a["goal"])
+
+
+def park_of(a):
+    return tuple(a["park"]) if a.get("park") is not None else tuple(a["goal"])
 
 
 def distance_field(goal, walls, w, h):
@@ -65,28 +79,41 @@ class CBSReplayPolicy:
 
 
 class GreedyPolicy:
+    """Rolls downhill toward its CURRENT target: goal first, then parking cell."""
     name = "greedy"
 
     def reset(self, s):
         w, h = s["grid"]["width"], s["grid"]["height"]
         walls = walls_of(s)
-        self.df = {a["id"]: distance_field(a["goal"], walls, w, h) for a in s["agents"]}
+        self.goal = {a["id"]: goal_of(a) for a in s["agents"]}
+        self.park = {a["id"]: park_of(a) for a in s["agents"]}
+        self.f_goal = {i: distance_field(self.goal[i], walls, w, h) for i in self.goal}
+        self.f_park = {i: distance_field(self.park[i], walls, w, h) for i in self.park}
+        self.visited = set()
         self.walls, self.w, self.h = walls, w, h
+
+    def _field(self, aid, pos):
+        if pos == self.goal[aid]:
+            self.visited.add(aid)
+        return self.f_park[aid] if aid in self.visited else self.f_goal[aid]
 
     def act(self, s, state, aid, t):
         x, y = state[aid]
-        best, best_d = "Wait", self.df[aid].get((x, y), 10 ** 9)
+        df = self._field(aid, (x, y))
+        best, best_d = "Wait", df.get((x, y), 10 ** 9)
         for a, (dx, dy) in STEP.items():
             nx, ny = x + dx, y + dy
             if 0 <= nx < self.w and 0 <= ny < self.h and (nx, ny) not in self.walls:
-                d = self.df[aid].get((nx, ny))
+                d = df.get((nx, ny))
                 if d is not None and d < best_d:
                     best, best_d = a, d
         return best
 
 
 class ModelPolicy:
-    """Loads Meera's CNN (a state_dict) and builds the tensor with her guidance.py."""
+    """Loads Meera's CNN (a state_dict) and builds the tensor with her guidance.py.
+    Steers toward the goal until reached, then toward the parking cell - same target
+    switch the training data uses."""
     name = "model"
 
     def __init__(self, model_path):
@@ -123,15 +150,23 @@ class ModelPolicy:
     def reset(self, s):
         self.w, self.h = s["grid"]["width"], s["grid"]["height"]
         self.walls = walls_of(s)
-        self.goals = {a["id"]: tuple(a["goal"]) for a in s["agents"]}
-        self.ids = sorted(self.goals)
-        self.fields = {i: self.guidance.distance_field(self.goals[i], self.w, self.h, self.walls)
+        self.goal = {a["id"]: goal_of(a) for a in s["agents"]}
+        self.park = {a["id"]: park_of(a) for a in s["agents"]}
+        self.ids = sorted(self.goal)
+        self.f_goal = {i: self.guidance.distance_field(self.goal[i], self.w, self.h, self.walls)
                        for i in self.ids}
+        self.f_park = {i: (self.f_goal[i] if self.park[i] == self.goal[i]
+                           else self.guidance.distance_field(self.park[i], self.w, self.h, self.walls))
+                       for i in self.ids}
+        self.visited = set()
 
     def act(self, s, state, aid, t):
         positions = [state[i] for i in self.ids]
         k = self.ids.index(aid)
-        obs = self.guidance.build_observation(k, positions, self.fields[aid],
+        if tuple(state[aid]) == self.goal[aid]:
+            self.visited.add(aid)
+        field = self.f_park[aid] if aid in self.visited else self.f_goal[aid]
+        obs = self.guidance.build_observation(k, positions, field,
                                               self.w, self.h, self.walls)
         x = self.torch.tensor(obs).unsqueeze(0)
         with self.torch.no_grad():
@@ -142,15 +177,21 @@ class ModelPolicy:
 def rollout(s, policy):
     w, h = s["grid"]["width"], s["grid"]["height"]
     walls = walls_of(s)
-    goals = {a["id"]: tuple(a["goal"]) for a in s["agents"]}
+    goal = {a["id"]: goal_of(a) for a in s["agents"]}
+    park = {a["id"]: park_of(a) for a in s["agents"]}      # final resting cell
     state = {a["id"]: tuple(a["start"]) for a in s["agents"]}
     ids = sorted(state)
     policy.reset(s)
     horizon = max(2 * (w + h), 4 * s["makespan"] + 5)
-    arrive = {i: 0 for i in ids if state[i] == goals[i]}
+    visited_goal = {i for i in ids if state[i] == goal[i]}
+    done = {i: 0 for i in ids if state[i] == park[i] and i in visited_goal}
     collisions = 0
+
+    def all_done():
+        return all(state[i] == park[i] and i in visited_goal for i in ids)
+
     for t in range(horizon):
-        if all(state[i] == goals[i] for i in ids):
+        if all_done():
             break
         prev = dict(state)
         moves = {}
@@ -167,11 +208,13 @@ def rollout(s, policy):
                     collisions += 1
         state = moves
         for i in ids:
-            if state[i] == goals[i] and i not in arrive:
-                arrive[i] = t + 1
-    reached = all(state[i] == goals[i] for i in ids)
-    makespan = max(arrive.values()) if reached else horizon
-    flowtime = sum(arrive.get(i, horizon) for i in ids)
+            if state[i] == goal[i]:
+                visited_goal.add(i)
+            if state[i] == park[i] and i in visited_goal and i not in done:
+                done[i] = t + 1
+    reached = all_done()
+    makespan = max(done.values()) if reached else horizon
+    flowtime = sum(done.get(i, horizon) for i in ids)
     return {"success": reached and collisions == 0, "reached": reached,
             "collisions": collisions, "makespan": makespan, "flowtime": flowtime}
 
@@ -190,7 +233,7 @@ def make_policy(kind, model_path=None):
 
 def main():
     ap = argparse.ArgumentParser(description="Task 4 evaluation of a MAPF policy.")
-    ap.add_argument("--dataset", default="../task1/dataset")
+    ap.add_argument("--dataset", default="../task1/wh_dataset")
     ap.add_argument("--policy", default="greedy", choices=["cbs", "greedy", "model"])
     ap.add_argument("--model", default=None)
     ap.add_argument("--limit", type=int, default=0)
@@ -214,10 +257,10 @@ def main():
     print(f"\nPolicy: {args.policy}   Scenarios: {n}")
     print("-" * 44)
     print(f"Fleet success rate     : {100*succ/n:5.1f}%   ({succ}/{n})")
-    print(f"All robots reached goal: {100*reached/n:5.1f}%   ({reached}/{n})")
+    print(f"All robots parked clear: {100*reached/n:5.1f}%   ({reached}/{n})")
     print(f"Collisions (total)     : {coll}")
     print(f"Makespan vs CBS (avg)  : {mk/n:5.2f}x")
-    print(f"Flowtime vs CBS (avg)  : {ft/n:5.2f}x")
+    print(f"Flowtime vs CBS (avg)  : {ft/n:5.2f}x   (flowtime = sum-of-costs, the headline)")
 
 
 if __name__ == "__main__":

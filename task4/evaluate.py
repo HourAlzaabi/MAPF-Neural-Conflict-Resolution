@@ -7,6 +7,7 @@ recorded in each file: fleet success rate, makespan, flowtime, collisions.
     python evaluate.py --dataset ../task1/wh_dataset --policy cbs      # sanity: 100%, 1.00x
     python evaluate.py --dataset ../task1/wh_dataset --policy greedy   # no-coordination baseline
     python evaluate.py --dataset ../task1/wh_dataset --policy model --model ../model.pt
+    python evaluate.py --dataset ../task1/wh_dataset --policy greedy --shield   # Task 3
 
 Policies:
     cbs     - replays the stored optimal paths (proves the harness: 100%, 1.00x).
@@ -25,7 +26,10 @@ import argparse
 import json
 import os
 import sys
+import time
 from collections import deque
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
 
 ACTIONS = ["N", "S", "E", "W", "Wait"]
 STEP = {"N": (0, -1), "S": (0, 1), "E": (1, 0), "W": (-1, 0), "Wait": (0, 0)}
@@ -174,7 +178,19 @@ class ModelPolicy:
         return ACTIONS[int(logits.argmax())]
 
 
-def rollout(s, policy):
+def _load_shield_class():
+    """Task 3's safety shield (task3/shield.py)."""
+    for cand in (os.path.join(_HERE, "..", "task3"), os.path.join(_HERE, "task3")):
+        if os.path.isdir(cand) and cand not in sys.path:
+            sys.path.insert(0, cand)
+    from shield import SafetyShield
+    return SafetyShield
+
+
+def rollout(s, policy, shield=None, deadlock_window=10):
+    """shield = None (raw policy) or a dict of SafetyShield options, e.g.
+    {"priority": "rotate", "fallback": "alternative"}: then every step runs
+    policy -> shield -> execute."""
     w, h = s["grid"]["width"], s["grid"]["height"]
     walls = walls_of(s)
     goal = {a["id"]: goal_of(a) for a in s["agents"]}
@@ -186,6 +202,19 @@ def rollout(s, policy):
     visited_goal = {i for i in ids if state[i] == goal[i]}
     done = {i: 0 for i in ids if state[i] == park[i] and i in visited_goal}
     collisions = 0
+    sh = None
+    if shield is not None:
+        sh = _load_shield_class()(walls, w, h, **shield)
+        fields = {}
+
+        def dist_fn(cell, tgt):
+            if tgt not in fields:
+                fields[tgt] = distance_field(tgt, walls, w, h)
+            return fields[tgt].get(cell, 10 ** 9)
+    shield_time = 0.0
+    steps = 0
+    still = 0
+    deadlock = False
 
     def all_done():
         return all(state[i] == park[i] and i in visited_goal for i in ids)
@@ -194,9 +223,16 @@ def rollout(s, policy):
         if all_done():
             break
         prev = dict(state)
+        proposed = {i: policy.act(s, state, i, t) for i in ids}
+        if sh is not None:
+            targets = {i: (park[i] if i in visited_goal else goal[i]) for i in ids}
+            t0 = time.perf_counter()
+            proposed = sh.filter(state, proposed, targets=targets, dist_fn=dist_fn)
+            shield_time += time.perf_counter() - t0
+        steps += 1
         moves = {}
         for i in ids:
-            dx, dy = STEP[policy.act(s, state, i, t)]
+            dx, dy = STEP[proposed[i]]
             nx, ny = state[i][0] + dx, state[i][1] + dy
             if not (0 <= nx < w and 0 <= ny < h) or (nx, ny) in walls:
                 nx, ny = state[i]
@@ -212,11 +248,18 @@ def rollout(s, policy):
                 visited_goal.add(i)
             if state[i] == park[i] and i in visited_goal and i not in done:
                 done[i] = t + 1
+        # Deadlock: nobody has moved for `deadlock_window` steps, not finished.
+        still = 0 if state != prev else still + 1
+        if sh is not None and still >= deadlock_window and not all_done():
+            deadlock = True
+            break
     reached = all_done()
     makespan = max(done.values()) if reached else horizon
     flowtime = sum(done.get(i, horizon) for i in ids)
     return {"success": reached and collisions == 0, "reached": reached,
-            "collisions": collisions, "makespan": makespan, "flowtime": flowtime}
+            "collisions": collisions, "makespan": makespan, "flowtime": flowtime,
+            "deadlock": deadlock, "steps": steps, "shield_time": shield_time,
+            "vetoes": sh.stats["vetoes"] if sh is not None else 0}
 
 
 def make_policy(kind, model_path=None):
@@ -237,30 +280,52 @@ def main():
     ap.add_argument("--policy", default="greedy", choices=["cbs", "greedy", "model"])
     ap.add_argument("--model", default=None)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--shield", action="store_true",
+                    help="wrap the policy in Task 3's safety shield")
+    ap.add_argument("--shield-priority", default="id",
+                    choices=["id", "rotate", "distance", "random"])
+    ap.add_argument("--shield-fallback", default="alternative",
+                    choices=["wait", "alternative"])
     args = ap.parse_args()
+    shield = ({"priority": args.shield_priority, "fallback": args.shield_fallback}
+              if args.shield else None)
 
     files = sorted(f for f in os.listdir(args.dataset) if f.endswith(".json"))
     if args.limit:
         files = files[:args.limit]
     policy = make_policy(args.policy, args.model)
-    n = succ = reached = coll = 0
-    mk = ft = 0.0
+    n = succ = reached = coll = dead = steps = vetoes = 0
+    mk = ft = sh_time = 0.0
+    worst_ms = 0.0
     for name in files:
         s = load_scenario(os.path.join(args.dataset, name))
-        r = rollout(s, policy)
+        r = rollout(s, policy, shield)
         n += 1
+        dead += r["deadlock"]
+        steps += r["steps"]
+        vetoes += r["vetoes"]
+        sh_time += r["shield_time"]
+        worst_ms = max(worst_ms, 1000 * r["shield_time"] / max(1, r["steps"]))
         succ += r["success"]
         reached += r["reached"]
         coll += r["collisions"]
         mk += r["makespan"] / max(1, s["makespan"])
         ft += r["flowtime"] / max(1, s["sum_of_costs"])
-    print(f"\nPolicy: {args.policy}   Scenarios: {n}")
+    label = args.policy
+    if shield:
+        label += f" + shield ({args.shield_priority} / {args.shield_fallback})"
+    print(f"\nPolicy: {label}   Scenarios: {n}")
     print("-" * 44)
     print(f"Fleet success rate     : {100*succ/n:5.1f}%   ({succ}/{n})")
     print(f"All robots parked clear: {100*reached/n:5.1f}%   ({reached}/{n})")
     print(f"Collisions (total)     : {coll}")
     print(f"Makespan vs CBS (avg)  : {mk/n:5.2f}x")
     print(f"Flowtime vs CBS (avg)  : {ft/n:5.2f}x   (flowtime = sum-of-costs, the headline)")
+    if shield:
+        print(f"Deadlocks              : {100*dead/n:5.1f}%   ({dead}/{n})")
+        print(f"Shield vetoes (total)  : {vetoes}")
+        print(f"Shield time per step   : {1000*sh_time/max(1, steps):.4f} ms avg, "
+              f"{worst_ms:.4f} ms worst scenario")
 
 
 if __name__ == "__main__":

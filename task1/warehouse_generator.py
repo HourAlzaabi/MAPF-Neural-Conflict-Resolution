@@ -49,6 +49,85 @@ def _free_degree(cell, walls, w, h):
     return d
 
 
+def _pick_faces(free, walls, w, h):
+    """Free cells that touch a shelf (>=1 wall neighbour) - the pick-faces a
+    robot drives to to collect an item. A goal is always one of these, so a
+    task looks like 'go to this shelf and pick', never a point in open floor."""
+    faces = []
+    for (x, y) in free:
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < w and 0 <= ny < h and (nx, ny) in walls:
+                faces.append((x, y))
+                break
+    return faces
+
+
+def _articulation_points(free, walls, w, h):
+    """Cells whose removal would split the free space in two - i.e. the sole
+    corridors / chokepoints. A robot must NOT park on one of these, or it would
+    block the only path between two areas. Iterative Tarjan lowlink DFS."""
+    fs = set(free)
+    if not fs:
+        return set()
+    adj = {}
+    for (x, y) in fs:
+        ns = []
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            n = (x + dx, y + dy)
+            if n in fs:
+                ns.append(n)
+        adj[(x, y)] = ns
+    root = next(iter(fs))
+    disc, low, parent = {}, {}, {root: None}
+    arts, timer = set(), [0]
+    stack = [(root, iter(adj[root]))]
+    disc[root] = low[root] = timer[0]; timer[0] += 1
+    root_children = 0
+    while stack:
+        node, it = stack[-1]
+        advanced = False
+        for nb in it:
+            if nb not in disc:
+                if node == root:
+                    root_children += 1
+                parent[nb] = node
+                disc[nb] = low[nb] = timer[0]; timer[0] += 1
+                stack.append((nb, iter(adj[nb])))
+                advanced = True
+                break
+            elif nb is not parent[node]:
+                low[node] = min(low[node], disc[nb])
+        if not advanced:
+            stack.pop()
+            if stack:
+                p = stack[-1][0]
+                low[p] = min(low[p], low[node])
+                if parent[p] is not None and low[node] >= disc[p]:
+                    arts.add(p)
+    if root_children > 1:
+        arts.add(root)
+    return arts
+
+
+def _backoff_cell(goal, free_set, walls, w, h, taken, arts):
+    """The nearest NON-BLOCKING open-floor cell to `goal`, not already taken.
+    "Non-blocking" means the cell is not a corridor/chokepoint (not an
+    articulation point of the free space), so a robot resting there can never
+    sit on the only path between two areas. We prefer a cell open on all four
+    sides (a true staging spot), then fall back to three open sides, always
+    skipping articulation points. A finished robot backs off its shelf face to
+    here and rests, becoming a static obstacle others simply route past."""
+    def pick(min_deg):
+        cand = [c for c in free_set
+                if c not in taken and c not in arts
+                and _free_degree(c, walls, w, h) >= min_deg]
+        if not cand:
+            return None
+        return min(cand, key=lambda c: abs(c[0] - goal[0]) + abs(c[1] - goal[1]))
+    return pick(4) or pick(3)
+
+
 def _spread_walls(rng, w, h):
     walls = set()
     narrow = rng.choice(['v', 'h'])        # which aisle direction is the 1-wide bottleneck
@@ -143,16 +222,40 @@ def make_scenario(rng, w, h, n_agents, flavour, tries=80):
         if len(free) < 3 * n_agents or not _connected(set(free)):
             continue
 
-        # starts + goals (all distinct), then open-floor parking cells.
-        pk = rng.sample(free, 2 * n_agents)
-        starts = [pk[2 * i] for i in range(n_agents)]
-        goals = [pk[2 * i + 1] for i in range(n_agents)]
-        taken = set(starts) | set(goals)
-        parks = _pick_parking(rng, set(free), walls, w, h, taken, n_agents)
-        if parks is None:
+        # Goals are SHELF PICK-FACES (a cell touching a shelf), not random open
+        # floor - every task is "drive to this shelf and pick". Starts are any
+        # other free cell. All distinct.
+        faces = _pick_faces(free, walls, w, h)
+        if len(faces) < n_agents:
             continue
-        agents = [{"id": i, "start": starts[i], "goal": goals[i], "park": parks[i]}
-                  for i in range(n_agents)]
+        goals = rng.sample(faces, n_agents)
+        rest = [c for c in free if c not in set(goals)]
+        if len(rest) < n_agents:
+            continue
+        starts = rng.sample(rest, n_agents)
+        taken = set(starts) | set(goals)
+
+        # Every robot, once it reaches its shelf (goal) and picks, BACKS OFF to
+        # the nearest open-floor staging cell and rests there. That keeps the
+        # pick-face free for other robots and turns the finished robot into a
+        # static obstacle the others plan around (never blocking an aisle,
+        # since the staging cell has >= 3 free neighbours).
+        free_set = set(free)
+        arts = _articulation_points(free, walls, w, h)
+        park_of = {}
+        ok = True
+        for i in range(n_agents):
+            pc = _backoff_cell(goals[i], free_set, walls, w, h, taken, arts)
+            if pc is None:
+                ok = False
+                break
+            park_of[i] = pc
+            taken.add(pc)
+        if not ok:
+            continue
+
+        agents = [{"id": i, "start": starts[i], "goal": goals[i],
+                   "park": park_of[i]} for i in range(n_agents)]
         return walls, debris, agents
     return None
 

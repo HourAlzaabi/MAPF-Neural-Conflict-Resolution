@@ -62,7 +62,8 @@ def build_record(sid, size, flavour, walls, debris, agents, paths, info):
             "debris": [list(c) for c in sorted(debris)],
         },
         "agents": [{"id": a["id"], "start": list(a["start"]),
-                    "goal": list(a["goal"]), "park": list(a["park"])}
+                    "goal": list(a["goal"]),
+                    "park": (list(a["park"]) if a.get("park") is not None else None)}
                    for a in agents],
         "trajectories": {str(i): [list(c) for c in padded[i]]
                          for i in range(len(padded))},

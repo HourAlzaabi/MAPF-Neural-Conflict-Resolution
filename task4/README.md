@@ -52,9 +52,20 @@ Expected on a correct build:
 - **Flowtime** — sum over robots of steps taken (ratio to CBS `sum_of_costs`).
 - **Collisions** — vertex + swap conflicts the policy would have caused.
 
-## Later: plugging in Task 3
+## Safety shield (Task 3)
 
-When the safety shield exists, it wraps any policy: the policy proposes a move,
-the shield vetoes it if it would collide and substitutes a safe one. `evaluate.py`
-can then gain a `--shield` flag to measure the shielded policy. No change needed
-to the visualizer.
+`--shield` wraps any policy in Task 3's shield (`task3/shield.py`): each step the
+policy proposes a move for every robot, the shield vetoes any move that would hit
+a wall or cause a vertex/swap conflict and substitutes a safe one, then the moves
+are executed.
+
+```
+python evaluate.py --policy greedy --shield                     # 729 collisions -> 0
+python evaluate.py --policy cbs --shield                        # must stay 100%, 1.00x
+python evaluate.py --policy model --model ../model.pt --shield
+python evaluate.py --policy greedy --shield --shield-fallback wait --shield-priority rotate
+```
+
+With `--shield` the report adds **deadlocks** (no robot moved for 10 steps while
+unfinished), **shield vetoes**, and **shield time per step**. See `task3/README.md`
+for the full results table.

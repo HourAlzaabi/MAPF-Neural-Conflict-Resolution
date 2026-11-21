@@ -110,22 +110,47 @@ def _articulation_points(free, walls, w, h):
     return arts
 
 
+def _neighbours(cell, w, h):
+    x, y = cell
+    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        nx, ny = x + dx, y + dy
+        if 0 <= nx < w and 0 <= ny < h:
+            yield (nx, ny)
+
+
 def _backoff_cell(goal, free_set, walls, w, h, taken, arts):
-    """The nearest NON-BLOCKING open-floor cell to `goal`, not already taken.
-    "Non-blocking" means the cell is not a corridor/chokepoint (not an
-    articulation point of the free space), so a robot resting there can never
-    sit on the only path between two areas. We prefer a cell open on all four
-    sides (a true staging spot), then fall back to three open sides, always
-    skipping articulation points. A finished robot backs off its shelf face to
-    here and rests, becoming a static obstacle others simply route past."""
-    def pick(min_deg):
-        cand = [c for c in free_set
-                if c not in taken and c not in arts
-                and _free_degree(c, walls, w, h) >= min_deg]
+    """The nearest NON-BLOCKING staging cell to `goal`, not already taken.
+
+    A finished robot backs off its shelf face to here and rests, becoming a
+    static obstacle others route past - so it must not block anyone. We reject,
+    in order of importance:
+      * articulation points  - cells that are the ONLY link between two areas;
+      * aisle mouths          - a cell open on all four sides but sitting next
+                                to a 1-wide corridor (free-degree <= 2) is the
+                                ENTRANCE to that aisle, so resting there seals
+                                it off from one side. We require every free
+                                neighbour to be open too (degree >= 3), which
+                                keeps the rest-spot out in real open floor, away
+                                from any aisle entrance on any side.
+    Tiers degrade gracefully so a valid spot is still found on tight maps."""
+    def deg(c):
+        return _free_degree(c, walls, w, h)
+
+    base = [c for c in free_set if c not in taken and c not in arts]
+
+    def nearest(pred):
+        cand = [c for c in base if pred(c)]
         if not cand:
             return None
         return min(cand, key=lambda c: abs(c[0] - goal[0]) + abs(c[1] - goal[1]))
-    return pick(4) or pick(3)
+
+    def open_all_round(c):   # open on 4 sides AND not next to any narrow corridor
+        return deg(c) == 4 and all(
+            deg(nb) >= 3 for nb in _neighbours(c, w, h) if nb not in walls)
+
+    return (nearest(open_all_round)      # best: deep open floor, no aisle mouth
+            or nearest(lambda c: deg(c) == 4)   # still open all round
+            or nearest(lambda c: deg(c) >= 3))  # last resort
 
 
 def _spread_walls(rng, w, h):

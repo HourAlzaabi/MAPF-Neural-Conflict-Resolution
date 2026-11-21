@@ -86,7 +86,7 @@
       "id": 2,
       "start": [0, 2],
       "goal": [1, 13],
-      "park": [2, 13]
+      "park": [3, 13]
     }
   ],
   "trajectories": {
@@ -145,10 +145,10 @@
       [0, 13],
       [1, 13],
       [2, 13],
-      [2, 13],
-      [2, 13],
-      [2, 13],
-      [2, 13]
+      [3, 13],
+      [3, 13],
+      [3, 13],
+      [3, 13]
     ]
   },
   "actions": {
@@ -204,14 +204,14 @@
       "S",
       "E",
       "E",
-      "Wait",
+      "E",
       "Wait",
       "Wait",
       "Wait"
     ]
   },
-  "sum_of_costs": 45,
-  "flowtime": 45,
+  "sum_of_costs": 46,
+  "flowtime": 46,
   "makespan": 17,
   "had_conflict": true,
   "solver": "CBS",

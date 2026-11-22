@@ -1,56 +1,31 @@
 @echo off
-REM ==================================================================
-REM  Conflict Resolution in Multi-Agent Path Finding
-REM  via Neural Imitation Learning  -  end-to-end pipeline
-REM
-REM  Stage 1 : generate expert demonstrations with the CBS solver
-REM  Stage 2 : train the neural policy (behavioural cloning)
-REM  Stage 3 : benchmark greedy / neural / neural + safety shield
-REM ==================================================================
+REM  Full pipeline: build dataset -> train policy -> benchmark (held-out).
 setlocal
-set PY=C:\Users\hoora\anaconda3\python.exe
+REM --- locate Anaconda Python (portable: works on any machine/user) ---
+set "PY="
+if exist "%USERPROFILE%\anaconda3\python.exe"  set "PY=%USERPROFILE%\anaconda3\python.exe"
+if not defined PY if exist "%USERPROFILE%\miniconda3\python.exe" set "PY=%USERPROFILE%\miniconda3\python.exe"
+if not defined PY if exist "%ProgramData%\anaconda3\python.exe"   set "PY=%ProgramData%\anaconda3\python.exe"
+if not defined PY ( python --version >nul 2>&1 && set "PY=python" )
+if not defined PY (
+  echo [!] Could not find Anaconda Python automatically.
+  echo     Open "Anaconda Prompt" and run this from there, or edit this
+  echo     file and set PY to the full path of your python.exe
+  pause
+  exit /b
+)
 cd /d "%~dp0"
-
-echo.
-echo ============================================================
-echo   Stage 1 of 3  -  Building the expert dataset (CBS)
-echo ============================================================
-cd task1
-"%PY%" generate_warehouse_dataset.py --n 1500 --out wh_dataset --seed 42
-cd ..
-if errorlevel 1 goto :fail
-
-echo.
-echo ============================================================
-echo   Stage 2 of 3  -  Training the neural policy
-echo ============================================================
+echo === 1/3  Building the dataset (seed 42) ===
+pushd task1 & "%PY%" generate_warehouse_dataset.py --n 1500 --out wh_dataset --seed 42 & popd
+echo === 2/3  Training the neural policy ===
 "%PY%" task2\train_v3.py
-if errorlevel 1 goto :fail
-
-echo.
-echo ============================================================
-echo   Stage 3 of 3  -  Benchmarking the policies
-echo ============================================================
-echo.
-echo   [ Baseline: greedy, no coordination ]
-"%PY%" task4\evaluate.py --dataset task1\wh_dataset --policy greedy
-echo.
-echo   [ Neural policy ]
-"%PY%" task4\evaluate.py --dataset task1\wh_dataset --policy model --model model.pt
-echo.
-echo   [ Neural policy + safety shield ]
-"%PY%" task4\evaluate.py --dataset task1\wh_dataset --policy model --model model.pt --shield
-
-echo.
-echo ============================================================
-echo   Pipeline complete.
-echo ============================================================
-goto :end
-
-:fail
-echo.
-echo   A stage did not complete. Review the message above.
-
-:end
+echo === 3/3  Evaluating on held-out maps ===
+"%PY%" make_holdout.py
+cd task4
+"%PY%" evaluate.py --dataset ..\task1\wh_holdout --policy greedy
+"%PY%" evaluate.py --dataset ..\task1\wh_holdout --policy model --model ..\model.pt
+"%PY%" evaluate.py --dataset ..\task1\wh_holdout --policy model --model ..\model.pt --shield
+"%PY%" evaluate.py --dataset ..\task1\wh_holdout --policy cbs
+echo Done.
 pause
 endlocal

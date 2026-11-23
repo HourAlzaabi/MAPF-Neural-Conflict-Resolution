@@ -1,1 +1,5 @@
 __pycache__/
+*.pyc
+.vscode/
+task1/dataset/
+wh_smoke_backoff/

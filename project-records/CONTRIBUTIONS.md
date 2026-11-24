@@ -11,10 +11,10 @@ Grades for this project are awarded individually. This document records each mem
 
 | Member | ID | GitHub | Task owned | System / code built | Report sections written |
 |---|---|---|---|---|---|
-| **Hour Alzaabi** | 100062976 | `HourAlzaabi` | Task 1 — Environment & dataset | Warehouse generator, CBS expert, dataset pipeline, non-blocking parking, held-out evaluation set, integration | Abstract; Ch. 1 (incl. §1.2 literature & patent review, §1.4); Ch. 3 (theoretical model); §4.1–4.5 & §5.1 (Task 1); §6.1–6.2; Ch. 7 (conclusions & future work) |
-| **Meera Alshehhi** | 100062797 | `Meera` | Task 2 — Neural policy | CNN architecture, behavioural-cloning training, class-weighted loss | §4.6 (policy design), §5.2 (training implementation) |
-| **Hoor Almuhsen** | 100062910 | `hoormuhsen` | Task 3 — Safety shield | Priority-reservation shield, veto/substitute logic, test & fuzz suite | §4.7 (shield design), §5.3 (shield implementation) |
-| **Aisha Al Naqbi** | 100063035 | `EngAisha11` | Task 4 — Visualizer & evaluation | Visualizer (rebuilt for the demo), evaluation harness, results analysis | §4.8 (design), §5.4 (implementation), §6.3 (evaluation) |
+| **Hour Alzaabi** | 100062976 | `HourAlzaabi` | Task 1 — Environment & dataset | Warehouse generator, CBS expert, dataset pipeline, non-blocking parking, held-out evaluation set, integration | Chapter 2 (System Overview); §4.1–4.5 & §5.1 (Task 1); §6.1–6.2 (verification & validation) |
+| **Meera Alshehhi** | 100062797 | `Meera` | Task 2 — Neural policy | CNN architecture, behavioural-cloning training, class-weighted loss | Abstract; Chapter 3 (theoretical model); §4.6 & §5.2 (Task 2) |
+| **Hoor Almuhsen** | 100062910 | `hoormuhsen` | Task 3 — Safety shield | Priority-reservation shield, veto/substitute logic, test & fuzz suite | §1.2 (literature & patent review); §4.7 & §5.3 (Task 3); Chapter 7 (conclusions & future work) |
+| **Aisha Al Naqbi** | 100063035 | `EngAisha11` | Task 4 — Visualizer & evaluation | Visualizer (rebuilt for the demo), evaluation harness, results analysis | §1.1, §1.3, §1.4; §4.8, §5.4 & §6.3 (Task 4); References |
 
 ## Detailed contributions (with commit evidence)
 

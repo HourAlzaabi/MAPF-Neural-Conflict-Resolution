@@ -245,6 +245,35 @@ def stats_of(s, frames):
     return dict(per=per, makespan=makespan, flowtime=flowtime, total_w=total_w)
 
 
+def outcome_of(s, frames):
+    """Classify a run from its frames: SUCCESS (all parked, no crash),
+    COLLISION (a vertex/swap clash happened), or DEADLOCK (nobody crashed but
+    not everyone reached their parking cell). Matches evaluate.py's rules."""
+    goals = {a["id"]: tuple(a["goal"]) for a in s["agents"]}
+    finals = {a["id"]: tuple(a["park"]) if a.get("park") else tuple(a["goal"])
+              for a in s["agents"]}
+    ids = sorted(goals)
+    collisions = 0
+    for t in range(1, len(frames)):
+        cur, pre = frames[t], frames[t - 1]
+        for a in range(len(ids)):
+            for b in range(a + 1, len(ids)):
+                i, j = ids[a], ids[b]
+                if cur[i] == cur[j] or (cur[i] == pre[j] and cur[j] == pre[i]):
+                    collisions += 1
+    reached = all(frames[-1][i] == finals[i] for i in ids)
+    result = "COLLISION" if collisions else ("SUCCESS" if reached else "DEADLOCK")
+    return dict(collisions=collisions, reached=reached, result=result)
+
+
+def full_stats(s, frames, label):
+    """stats_of + outcome_of + the policy label, in one dict for the HUD."""
+    d = stats_of(s, frames)
+    d.update(outcome_of(s, frames))
+    d["label"] = label
+    return d
+
+
 def draw(surf, s, frames, t, fonts, meta, stats, fov=None, frac=0.0,
          playing=True, speed=3.0, muted=False, controls=False, dark=False):
     f_h, f_b, f_s, f_n, f_stat = fonts
@@ -276,6 +305,21 @@ def draw(surf, s, frames, t, fonts, meta, stats, fov=None, frac=0.0,
     sc = ACCENT if playing else AMBER
     st_r = f_s.render(status, True, sc)
     surf.blit(st_r, (ox + w * CELL - st_r.get_width(), 30))
+
+    # ---- policy label + outcome badge (left, below the title) ----
+    label = stats.get("label", "")
+    result = stats.get("result", "")
+    if label:
+        lab_r = f_b.render(label, True, INK)
+        surf.blit(lab_r, (PAD, 52))
+        if result:
+            rc = {"SUCCESS": OKGREEN, "COLLISION": CRASH, "DEADLOCK": AMBER}.get(result, MUTED)
+            dotx = PAD + lab_r.get_width() + 16
+            doty = 52 + lab_r.get_height() // 2
+            pygame.gfxdraw.filled_circle(surf, dotx, doty, 5, rc)
+            pygame.gfxdraw.aacircle(surf, dotx, doty, 5, rc)
+            res_r = f_b.render(result, True, rc)
+            surf.blit(res_r, (dotx + 10, 52))
 
     # ---- board backing card (sits fully below the header band) ----
     _rrect(surf, SHADOW, (ox - 9, oy - 7, w * CELL + 20, h * CELL + 20), 16)  # shadow
@@ -434,7 +478,12 @@ def draw(surf, s, frames, t, fonts, meta, stats, fov=None, frac=0.0,
     elif waiting:
         msg, col = "Robot %s waiting — yielding" % ", ".join(map(str, waiting)), AMBER
     elif all(frame[i] == finals[i] for i in frame):
-        msg, col = "All robots done · parked clear of the aisles", OKGREEN
+        if stats.get("result") == "COLLISION":
+            msg, col = "Parked — but a collision happened en route · not a valid solution", CRASH
+        else:
+            msg, col = "All robots done · parked clear of the aisles", OKGREEN
+    elif stats.get("result") == "DEADLOCK" and t >= len(frames) - 1:
+        msg, col = "Deadlock — robots stuck waiting · not everyone reached their spot", AMBER
     else:
         msg, col = "running · step %d / %d" % (t, len(frames) - 1), MUTED
     surf.blit(f_b.render(msg, True, col), (PAD, fy))
@@ -520,10 +569,12 @@ def _draw_panel(surf, x, y, s, frame, prev, goals, finals, waiting, crashed, sta
 
     # ---- STATISTICS card ----
     sy = y + fleet_h + 16
+    _coll = stats.get("collisions", 0)
+    _csub = "shielded" if "Shield" in stats.get("label", "") else ("none" if not _coll else "unshielded")
     tiles = [("MAKESPAN", stats["makespan"], "steps"),
              ("FLOWTIME", stats["flowtime"], "sum of costs"),
              ("TOTAL WAIT", stats["total_w"], "steps"),
-             ("COLLISIONS", 0, "shielded")]
+             ("COLLISIONS", _coll, _csub)]
     tw = (W - 34) // 2
     th = 62
     stats_h = 44 + 2 * th + 10
@@ -534,8 +585,9 @@ def _draw_panel(surf, x, y, s, frame, prev, goals, finals, waiting, crashed, sta
         tx = x + 13 + (k % 2) * (tw + 8)
         ty = sy + 38 + (k // 2) * (th + 6)
         _rrect(surf, TILE_BG, (tx, ty, tw, th), 10)
+        vcol = CRASH if (lab == "COLLISIONS" and val) else INK
         surf.blit(f_n.render(lab, True, MUTED), (tx + 11, ty + 10))
-        surf.blit(f_stat.render(str(val), True, INK), (tx + 11, ty + 24))
+        surf.blit(f_stat.render(str(val), True, vcol), (tx + 11, ty + 24))
         surf.blit(f_n.render(sub, True, MUTED), (tx + 11, ty + 46))
 
     # ---- LEGEND card ----
@@ -579,6 +631,8 @@ def main():
     ap.add_argument("scenario", help="a scenario .json, or a folder of them")
     ap.add_argument("--policy", default=None, choices=["cbs", "greedy", "model"])
     ap.add_argument("--model", default=None)
+    ap.add_argument("--shield", action="store_true",
+                    help="wrap the policy with Task 3's safety shield (expect 0 collisions)")
     ap.add_argument("--random", type=int, default=20, help="browse a random sample of N")
     ap.add_argument("--export", default=None)
     ap.add_argument("--gif", default=None)
@@ -596,11 +650,29 @@ def main():
         files = [here] + pool[:max(0, args.random - 1)]
     idx = 0
 
-    def framesof(scn):
-        return frames_from_policy(scn, args.policy, args.model) if args.policy \
-            else frames_from_trajectories(scn)
+    LABEL = ("CNN + Shield" if (args.policy == "model" and args.shield)
+             else "CNN (no shield)" if args.policy == "model"
+             else "Greedy + Shield" if (args.policy == "greedy" and args.shield)
+             else "Greedy (no coordination)" if args.policy == "greedy"
+             else "CBS (optimal expert)" if args.policy == "cbs"
+             else "CBS (optimal, replayed)")
 
-    s = load(files[idx]); frames = framesof(s); stats = stats_of(s, frames)
+    _pol = {}
+
+    def framesof(scn):
+        # No policy -> replay the stored optimal (CBS) paths.
+        # With a policy -> run it live through evaluate.rollout, which also
+        # applies Task 3's shield and the goal->park schema, so the animation
+        # matches the evaluation numbers exactly.
+        if not args.policy:
+            return frames_from_trajectories(scn)
+        import evaluate
+        if "p" not in _pol:
+            _pol["p"] = evaluate.make_policy(args.policy, args.model)
+        res = evaluate.rollout(scn, _pol["p"], shield=({} if args.shield else None))
+        return res["frames"]
+
+    s = load(files[idx]); frames = framesof(s); stats = full_stats(s, frames, LABEL)
 
     if args.export or args.gif:
         os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -661,7 +733,7 @@ def main():
 
     def load_index(i):
         nonlocal s, frames, stats, screen, ft, playing, last_step
-        s = load(files[i]); frames = framesof(s); stats = stats_of(s, frames)
+        s = load(files[i]); frames = framesof(s); stats = full_stats(s, frames, LABEL)
         screen = pygame.display.set_mode(build_surface_size(s))
         ft, playing, last_step = 0.0, True, 0
 

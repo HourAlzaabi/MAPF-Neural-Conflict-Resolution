@@ -198,6 +198,7 @@ def rollout(s, policy, shield=None, deadlock_window=10):
     state = {a["id"]: tuple(a["start"]) for a in s["agents"]}
     ids = sorted(state)
     policy.reset(s)
+    frames = [dict(state)]
     horizon = max(2 * (w + h), 4 * s["makespan"] + 5)
     visited_goal = {i for i in ids if state[i] == goal[i]}
     done = {i: 0 for i in ids if state[i] == park[i] and i in visited_goal}
@@ -243,6 +244,7 @@ def rollout(s, policy, shield=None, deadlock_window=10):
                 if moves[i] == moves[j] or (moves[i] == prev[j] and moves[j] == prev[i]):
                     collisions += 1
         state = moves
+        frames.append(dict(state))
         for i in ids:
             if state[i] == goal[i]:
                 visited_goal.add(i)
@@ -259,6 +261,7 @@ def rollout(s, policy, shield=None, deadlock_window=10):
     return {"success": reached and collisions == 0, "reached": reached,
             "collisions": collisions, "makespan": makespan, "flowtime": flowtime,
             "deadlock": deadlock, "steps": steps, "shield_time": shield_time,
+            "frames": frames,
             "vetoes": sh.stats["vetoes"] if sh is not None else 0}
 
 
